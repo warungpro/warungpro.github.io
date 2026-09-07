@@ -195,12 +195,17 @@ tbody td{padding:9px 11px;vertical-align:middle;}
       <div class="form-group"><label>Satuan Dasar (dijual per...)</label><input id="mb-satuan" placeholder="pcs, kg, botol"></div>
       <div class="form-group"><label>Harga Beli (per satuan dasar)</label><input id="mb-hbeli" type="number"></div>
       <div class="form-group"><label>Harga Jual (per satuan dasar)</label><input id="mb-hjual" type="number"></div>
-      <div class="form-group"><label>Stok (dalam satuan dasar)</label><input id="mb-stok" type="number"></div>
+      <div class="form-group"><label>Stok (dalam satuan dasar)</label><input id="mb-stok" type="number"><span style="font-size:10.5px;color:var(--ink-faint)">Kalau diisi Resep di bawah, stok dihitung otomatis dari bahan &mdash; field ini diabaikan.</span></div>
       <div class="form-group"><label>Stok Minimum (peringatan)</label><input id="mb-stokmin" type="number" value="5"></div>
       <div class="form-group"><label>Harga Grosir (opsional)</label><input id="mb-hgrosir" type="number" placeholder="kosongkan kalau gak ada"></div>
       <div class="form-group"><label>Min. Qty buat Harga Grosir</label><input id="mb-mingrosir" type="number" placeholder="misal: 12"></div>
       <div class="form-group"><label>Status</label><select id="mb-aktif"><option value="1">Aktif (dijual)</option><option value="0">Non-aktif (disembunyikan)</option></select></div>
     </div>
+    <div class="form-group" style="margin-top:6px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="mb-bahanbaku" style="width:auto"> Ini bahan baku aja (gak dijual langsung, sembunyikan dari Kasir)</label></div>
+    <div class="card-title" style="margin-top:14px;font-size:13px">Resep (Racikan dari Bahan Baku)</div>
+    <p style="font-size:11.5px;color:var(--ink-soft);margin-bottom:8px">Isi ini kalau barang ini diracik/dimasak dari bahan lain (misal: Mie Goreng dari mie, telur, minyak). Modal & potong stok bahan dihitung otomatis pas laku — stok barang ini juga otomatis dihitung dari stok bahan yang tersedia.</p>
+    <div id="mb-resep-list"></div>
+    <div class="btn-row"><button type="button" class="btn btn-sm" onclick="tambahBarisResep()">+ Tambah Bahan</button> <button type="button" class="btn btn-sm" onclick="hitungModalDariResepForm()">🧮 Hitung Modal dari Resep</button></div>
     <div class="card-title" style="margin-top:14px;font-size:13px">Satuan Besar / Konversi (opsional)</div>
     <p style="font-size:11.5px;color:var(--ink-soft);margin-bottom:8px">Isi ini kalau kamu beli dalam kemasan besar (dus/pak) tapi jual satuan kecil (pcs). Stok tetap dihitung dalam satuan dasar di atas.</p>
     <div class="form-grid">
@@ -447,6 +452,26 @@ function formatNomorWA(hp){
 }
 function rp(n){n=Number(n)||0;return 'Rp'+n.toLocaleString('id-ID');}
 function today(){return new Date().toISOString().slice(0,10);}
+function stokTersedia(b){
+  if(b&&b.resep&&b.resep.length){
+    var bisa=b.resep.map(function(r){
+      var bahan=db.barang.find(function(x){return x.id===r.bahanId;});
+      if(!bahan||!r.qty)return 0;
+      return Math.floor((Number(bahan.stok)||0)/Number(r.qty));
+    });
+    return bisa.length?Math.min.apply(null,bisa):0;
+  }
+  return Number(b?b.stok:0)||0;
+}
+function modalDariResep(b){
+  if(!b||!b.resep||!b.resep.length)return null;
+  var total=0;
+  b.resep.forEach(function(r){
+    var bahan=db.barang.find(function(x){return x.id===r.bahanId;});
+    if(bahan)total+=(Number(bahan.hargaBeli)||0)*(Number(r.qty)||0);
+  });
+  return total+(Number(STORE&&STORE.overheadPerPorsi)||0);
+}
 function fmtTgl(iso){var d=new Date(iso);return d.toLocaleDateString('id-ID',{day:'2-digit',month:'short',year:'numeric'});}
 function showToast(msg){var t=document.getElementById('toast');t.textContent=msg;t.style.display='block';clearTimeout(window._tt);window._tt=setTimeout(function(){t.style.display='none';},2200);}
 function logAudit(aksi,detail){
@@ -488,7 +513,7 @@ function onBarcodeScanned(text){
 }
 
 /* ====== USERS / LOGIN ====== */
-var STORE=Object.assign({nama:'Buku Warung',alamat:'',wa:'',logo:''},JSON.parse(localStorage.getItem('bw_toko')||'null')||{});
+var STORE=Object.assign({nama:'Buku Warung',alamat:'',wa:'',logo:'',overheadPerPorsi:0},JSON.parse(localStorage.getItem('bw_toko')||'null')||{});
 function terapkanBranding(){
   document.querySelectorAll('.brand-nama').forEach(function(el){el.textContent=STORE.nama;});
   var t=document.getElementById('page-title');if(t)t.textContent=STORE.nama;
@@ -501,6 +526,8 @@ function simpanBranding(){
   STORE.nama=(document.getElementById('set-nama-toko').value||'Buku Warung').trim();
   STORE.alamat=(document.getElementById('set-alamat-toko').value||'').trim();
   STORE.wa=(document.getElementById('set-wa-toko').value||'').trim();
+  var elOverhead=document.getElementById('set-overhead-porsi');
+  if(elOverhead)STORE.overheadPerPorsi=Number(elOverhead.value)||0;
   localStorage.setItem('bw_toko',JSON.stringify(STORE));
   terapkanBranding();showToast('Identitas toko disimpan.');
 }
@@ -838,7 +865,7 @@ function renderDashboard(){
   var omzetHariIni=jualHariIni.reduce(function(s,t){return s+t.total;},0);
   var hppHariIni=jualHariIni.reduce(function(s,t){return s+t.items.reduce(function(ss,i){var b=db.barang.find(function(x){return x.id===i.barangId;});return ss+(b?b.hargaBeli:0)*i.jumlah;},0);},0);
   var labaHariIni=omzetHariIni-hppHariIni;
-  var stokMenipis=db.barang.filter(function(b){return Number(b.stok)<=Number(b.stokMin||5);});
+  var stokMenipis=db.barang.filter(function(b){return stokTersedia(b)<=Number(b.stokMin||5);});
   var utangBeredar=totalUtangSemua();
   var topUtang=db.pelanggan.map(function(p){return {nama:p.nama,sisa:totalUtangPelanggan(p.id)};}).filter(function(p){return p.sisa>0;}).sort(function(a,b){return b.sisa-a.sisa;}).slice(0,5);
   var perBarangHariIni={};
@@ -900,7 +927,7 @@ function renderDashboard(){
 }
 
 function reminderStokWA(){
-  var stokMenipis=db.barang.filter(function(b){return Number(b.stok)<=Number(b.stokMin||5);});
+  var stokMenipis=db.barang.filter(function(b){return stokTersedia(b)<=Number(b.stokMin||5);});
   if(!stokMenipis.length)return showToast('Gak ada stok menipis.');
   var nomor=formatNomorWA(STORE.wa);
   if(!nomor){var inputNomor=prompt('No. WA belum diisi di Pengaturan. Masukkan no. WA tujuan (misal 08xxxxxxxxxx):');if(!inputNomor)return;nomor=formatNomorWA(inputNomor);}
@@ -945,6 +972,48 @@ function hapusFotoBarangForm(){
   _mbFotoData='';
   renderFotoBarangPreview();
 }
+var _mbResep=[];
+function renderResepRows(){
+  var wrap=document.getElementById('mb-resep-list');if(!wrap)return;
+  var editId=document.getElementById('mb-id').value;
+  var opsiBahan=db.barang.filter(function(x){return x.id!==editId;});
+  if(!_mbResep.length){wrap.innerHTML='<div class="empty-state" style="padding:8px 0">Belum ada bahan. Klik "+ Tambah Bahan" kalau barang ini diracik dari barang lain.</div>';return;}
+  wrap.innerHTML=_mbResep.map(function(r,i){
+    var opts=opsiBahan.map(function(x){return '<option value="'+x.id+'" '+(x.id===r.bahanId?'selected':'')+'>'+x.nama+' ('+rp(x.hargaBeli)+'/'+x.satuan+', stok '+x.stok+')</option>';}).join('');
+    return '<div class="form-grid" style="grid-template-columns:2fr 1fr auto;align-items:end;gap:8px;margin-bottom:6px">'+
+      '<div class="form-group"><label>Bahan</label><select onchange="updateBarisResep('+i+',\'bahanId\',this.value)"><option value="">-- pilih bahan --</option>'+opts+'</select></div>'+
+      '<div class="form-group"><label>Qty per porsi</label><input type="number" step="any" value="'+(r.qty||'')+'" oninput="updateBarisResep('+i+',\'qty\',this.value)"></div>'+
+      '<button type="button" class="btn btn-sm btn-red" onclick="hapusBarisResep('+i+')">🗑️</button>'+
+    '</div>';
+  }).join('');
+}
+function tambahBarisResep(){
+  _mbResep.push({bahanId:'',qty:1});
+  renderResepRows();
+}
+function updateBarisResep(i,field,value){
+  if(!_mbResep[i])return;
+  _mbResep[i][field]=field==='qty'?Number(value)||0:value;
+}
+function hapusBarisResep(i){
+  _mbResep.splice(i,1);
+  renderResepRows();
+}
+function hitungModalDariResepForm(){
+  var valid=_mbResep.filter(function(r){return r.bahanId&&r.qty>0;});
+  if(!valid.length)return showToast('Isi minimal 1 bahan dengan qty dulu!');
+  var totalBahan=0,adaBahanHilang=false;
+  valid.forEach(function(r){
+    var bahan=db.barang.find(function(x){return x.id===r.bahanId;});
+    if(!bahan){adaBahanHilang=true;return;}
+    totalBahan+=(Number(bahan.hargaBeli)||0)*r.qty;
+  });
+  var overhead=Number(STORE.overheadPerPorsi)||0;
+  var total=totalBahan+overhead;
+  document.getElementById('mb-hbeli').value=total;
+  var rincian='Bahan '+rp(totalBahan)+(overhead?' + Overhead '+rp(overhead):'')+' = '+rp(total);
+  showToast('Modal per porsi diisi: '+rincian+(adaBahanHilang?' (ada bahan yang gak ketemu)':''));
+}
 function openBarangModal(id){
   document.getElementById('mb-id').value=id||'';
   document.getElementById('kategori-datalist').innerHTML=db.kategori.map(function(k){return '<option value="'+k+'">';}).join('');
@@ -965,15 +1034,20 @@ function openBarangModal(id){
     document.getElementById('mb-satuanbesar').value=b.satuanBesar||'';
     document.getElementById('mb-isibesar').value=b.isiPerSatuanBesar||'';
     document.getElementById('mb-margintarget').value='';
+    document.getElementById('mb-bahanbaku').checked=!!b.bahanBakuOnly;
     _mbFotoData=b.foto||'';
+    _mbResep=(b.resep||[]).map(function(r){return {bahanId:r.bahanId,qty:r.qty};});
   }else{
     document.getElementById('mb-title').textContent='Tambah Barang';
     ['mb-nama','mb-kategori','mb-barcode','mb-satuan','mb-hbeli','mb-hjual','mb-stok','mb-hgrosir','mb-mingrosir','mb-satuanbesar','mb-isibesar','mb-margintarget'].forEach(function(i){document.getElementById(i).value='';});
     document.getElementById('mb-stokmin').value=5;
     document.getElementById('mb-aktif').value='1';
+    document.getElementById('mb-bahanbaku').checked=false;
     _mbFotoData='';
+    _mbResep=[];
   }
   renderFotoBarangPreview();
+  renderResepRows();
   openModal('modal-barang');
 }
 function hitungRekomendasiHarga(){
@@ -995,6 +1069,8 @@ function simpanBarang(){
     hargaGrosir:Number(document.getElementById('mb-hgrosir').value)||0,minGrosir:Number(document.getElementById('mb-mingrosir').value)||0,
     aktif:document.getElementById('mb-aktif').value==='1',
     satuanBesar:document.getElementById('mb-satuanbesar').value.trim(),isiPerSatuanBesar:Number(document.getElementById('mb-isibesar').value)||0,
+    bahanBakuOnly:document.getElementById('mb-bahanbaku').checked,
+    resep:_mbResep.filter(function(r){return r.bahanId&&r.qty>0;}),
     foto:_mbFotoData||''};
   if(id){var b=db.barang.find(function(x){return x.id===id;});Object.assign(b,data);logAudit('Edit Barang',data.nama);}
   else{data.id=uid();db.barang.push(data);logAudit('Tambah Barang',data.nama);}
@@ -1138,8 +1214,8 @@ function renderStokTable(){
   function margin(b){return b.hargaBeli>0?(b.hargaJual-b.hargaBeli)/b.hargaBeli*100:0;}
   var sortFn={
     nama:function(a,b){return a.nama.localeCompare(b.nama);},
-    stok_asc:function(a,b){return a.stok-b.stok;},
-    stok_desc:function(a,b){return b.stok-a.stok;},
+    stok_asc:function(a,b){return stokTersedia(a)-stokTersedia(b);},
+    stok_desc:function(a,b){return stokTersedia(b)-stokTersedia(a);},
     harga_asc:function(a,b){return a.hargaJual-b.hargaJual;},
     harga_desc:function(a,b){return b.hargaJual-a.hargaJual;},
     margin_asc:function(a,b){return margin(a)-margin(b);},
@@ -1151,17 +1227,20 @@ function renderStokTable(){
   if(stokPage<0)stokPage=0;
   var pageList=list.slice(stokPage*pageSize,(stokPage+1)*pageSize);
   var rows=pageList.map(function(b){
-    var low=Number(b.stok)<=Number(b.stokMin||5);
+    var stokTampil=stokTersedia(b);
+    var low=stokTampil<=Number(b.stokMin||5);
     var nonAktif=b.aktif===false;
+    var isRacikan=b.resep&&b.resep.length;
     var grosirInfo=(b.hargaGrosir&&b.minGrosir)?'<div style="font-size:10.5px;color:var(--ink-soft)">Grosir: '+rp(b.hargaGrosir)+' (min '+b.minGrosir+')</div>':'';
-    var besarInfo=(b.satuanBesar&&b.isiPerSatuanBesar)?'<div style="font-size:10.5px;color:var(--ink-soft)">≈'+(b.stok/b.isiPerSatuanBesar).toFixed(1)+' '+b.satuanBesar+'</div>':'';
+    var besarInfo=(!isRacikan&&b.satuanBesar&&b.isiPerSatuanBesar)?'<div style="font-size:10.5px;color:var(--ink-soft)">≈'+(b.stok/b.isiPerSatuanBesar).toFixed(1)+' '+b.satuanBesar+'</div>':'';
+    var racikanInfo=isRacikan?'<div style="font-size:10.5px;color:var(--ink-soft)">racikan</div>':'';
     var m=margin(b);
     var thumb=b.foto?('<img src="'+b.foto+'" style="width:28px;height:28px;object-fit:cover;border-radius:5px;vertical-align:middle;margin-right:6px">'):'';
     return '<tr style="'+(nonAktif?'opacity:.5':'')+'">'+
     '<td><input type="checkbox" style="width:auto" onchange="toggleStokSelect(\''+b.id+'\')" '+(stokSelected.indexOf(b.id)>-1?'checked':'')+'></td>'+
-    '<td>'+thumb+b.nama+(nonAktif?' <span style="font-size:10px;color:var(--ink-faint)">(non-aktif)</span>':'')+'</td>'+
+    '<td>'+thumb+b.nama+(nonAktif?' <span style="font-size:10px;color:var(--ink-faint)">(non-aktif)</span>':'')+(b.bahanBakuOnly?' <span style="font-size:10px;color:var(--ink-faint)">(bahan baku)</span>':'')+'</td>'+
     '<td>'+(b.kategori||'-')+'</td>'+
-    '<td class="mono" style="'+(low?'color:var(--stamp-red);font-weight:700':'')+'">'+b.stok+' '+b.satuan+besarInfo+'</td>'+
+    '<td class="mono" style="'+(low?'color:var(--stamp-red);font-weight:700':'')+'">'+stokTampil+' '+b.satuan+besarInfo+racikanInfo+'</td>'+
     '<td class="mono">'+rp(b.hargaBeli)+'</td>'+
     '<td class="mono">'+rp(b.hargaJual)+grosirInfo+'</td>'+
     '<td class="mono" style="'+(m<10?'color:var(--stamp-red)':'color:var(--cash-green)')+'">'+m.toFixed(0)+'%</td>'+
@@ -1618,7 +1697,8 @@ function renderProdukGrid(){
   var grid=document.getElementById('kr-grid');if(!grid)return;
   var list=db.barang.filter(function(b){
     if(b.aktif===false)return false;
-    if(b.stok<=0)return false;
+    if(b.bahanBakuOnly)return false;
+    if(stokTersedia(b)<=0)return false;
     if(b.nama.toLowerCase().indexOf(q)===-1&&(b.barcode||'').toLowerCase().indexOf(q)===-1)return false;
     if(kasirKategoriAktif!=='semua'&&(b.kategori||'').trim()!==kasirKategoriAktif)return false;
     return true;
@@ -1629,7 +1709,7 @@ function renderProdukGrid(){
     return '<div class="btn" style="flex-direction:column;align-items:stretch;text-align:left;padding:10px;height:auto;cursor:default">'+
     '<span style="cursor:pointer" onclick="tambahKeCart(\''+b.id+'\')">'+thumb+
       '<span style="font-weight:700;display:block">'+b.nama+'</span>'+
-      '<span class="mono" style="font-size:11px;color:var(--ink-soft);display:block">'+rp(b.hargaJual)+' · stok '+b.stok+'</span>'+
+      '<span class="mono" style="font-size:11px;color:var(--ink-soft);display:block">'+rp(b.hargaJual)+' · stok '+stokTersedia(b)+'</span>'+
     '</span>'+besarBtn+'</div>';
   }).join(''):'<div class="empty-state" style="grid-column:1/-1">Barang gak ketemu / stok kosong.</div>';
 }
@@ -1674,7 +1754,8 @@ function tambahKeCart(barangId,jumlahTambah){
   var b=db.barang.find(function(x){return x.id===barangId;});
   var existing=cart.find(function(c){return c.barangId===barangId;});
   var qtyTerpakai=existing?existing.jumlah:0;
-  if(qtyTerpakai+jumlahTambah>b.stok)return showToast('Stok cuma '+b.stok+' '+b.satuan+'!');
+  var stokMax=stokTersedia(b);
+  if(qtyTerpakai+jumlahTambah>stokMax)return showToast('Stok cuma '+stokMax+' '+b.satuan+'!');
   if(existing){
     existing.jumlah+=jumlahTambah;existing.harga=hargaBerdasarkanQty(b,existing.jumlah);existing.subtotal=existing.jumlah*existing.harga-(existing.diskonItem||0);
   }else{
@@ -1816,7 +1897,17 @@ function prosesTransaksi(){
     if(metode==='tunai'&&uangDiterima<t.total)return showToast('Uang diterima kurang dari total!');
     kembalian=metode==='tunai'?uangDiterima-t.total:0;
   }
-  cart.forEach(function(c){var b=db.barang.find(function(x){return x.id===c.barangId;});b.stok=Number(b.stok)-c.jumlah;});
+  cart.forEach(function(c){
+    var b=db.barang.find(function(x){return x.id===c.barangId;});
+    if(b.resep&&b.resep.length){
+      b.resep.forEach(function(r){
+        var bahan=db.barang.find(function(x){return x.id===r.bahanId;});
+        if(bahan)bahan.stok=Number(bahan.stok)-(Number(r.qty)||0)*c.jumlah;
+      });
+    }else{
+      b.stok=Number(b.stok)-c.jumlah;
+    }
+  });
   var record={id:uid(),tanggal:today(),waktu:new Date().toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'}),ts:Date.now(),items:cart.slice(),
     subtotal:t.subtotal,diskon:t.diskon,total:t.total,metode:metode,pembayaranSplit:pembayaranSplit,pelangganId:pelangganId,
     uangDiterima:uangDiterima,kembalian:kembalian,catatan:document.getElementById('kr-catatan').value.trim(),void:false,
@@ -2877,6 +2968,7 @@ function renderPengaturan(){
     '<div class="form-group"><label>Nama Toko</label><input id="set-nama-toko" value="'+STORE.nama+'"></div>'+
     '<div class="form-group"><label>No. WA Toko</label><input id="set-wa-toko" value="'+STORE.wa+'" placeholder="08xxxxxxxxxx"></div>'+
     '<div class="form-group"><label>Alamat</label><input id="set-alamat-toko" value="'+STORE.alamat+'" placeholder="opsional"></div>'+
+    '<div class="form-group"><label>Biaya Operasional per Porsi (Rp)</label><input id="set-overhead-porsi" type="number" value="'+(STORE.overheadPerPorsi||0)+'" placeholder="gas, listrik, tenaga, dll"></div>'+
   '</div><div class="btn-row"><button class="btn btn-dark" onclick="simpanBranding()">Simpan Identitas</button></div></div>'+
   '<div class="card"><div class="card-title">🎨 Tema Aplikasi</div>'+
   '<p style="font-size:12px;color:var(--ink-soft);margin-bottom:10px">Ganti warna & background sesuai selera — tersimpan di HP ini aja (tiap HP/kasir bisa beda tampilan, gak ikut sinkron ke perangkat lain).</p>'+
